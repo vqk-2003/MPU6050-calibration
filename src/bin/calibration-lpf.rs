@@ -46,22 +46,57 @@ async fn main(_spawner: Spawner) -> ! {
         .into_async();
     let mut mpu = esp_mpu6050::Mpu6050::new(i2c, 0x68);
     mpu.init().await;
-    // Values got from calibration.rs
-    mpu.set_offsets(855, -98, 351, -182, 187, -108);
 
-    const DEG_2_RAD: f32 = 3.14159 / 180.0;
-    const RAD_2_DEG: f32 = 180.0 / 3.14159;
-    let mut angle = 0.0;
+    info!("Start calibrating...");
+
+    let raw_meas = mpu.get_raw_measurements().await;
+    let mut offsets = (
+        raw_meas.accel_x as f32,
+        raw_meas.accel_y as f32,
+        raw_meas.accel_z as f32 - 16384.0,
+        raw_meas.gyro_x as f32,
+        raw_meas.gyro_y as f32,
+        raw_meas.gyro_z as f32,
+    );
+
+    for _ in 0..1000 {
+        let raw_meas = mpu.get_raw_measurements().await;
+        low_pass_filter(&mut offsets.0, raw_meas.accel_x as f32);
+        low_pass_filter(&mut offsets.1, raw_meas.accel_y as f32);
+        low_pass_filter(&mut offsets.2, raw_meas.accel_z as f32 - 16384.0);
+        low_pass_filter(&mut offsets.3, raw_meas.gyro_x as f32);
+        low_pass_filter(&mut offsets.4, raw_meas.gyro_y as f32);
+        low_pass_filter(&mut offsets.5, raw_meas.gyro_z as f32);
+        Timer::after_millis(10).await;
+    }
+
+    info!("Finished calibrating!");
+    info!("Calibrated values: {:?}", offsets);
+    mpu.set_offsets(
+        offsets.0 as i16,
+        offsets.1 as i16,
+        offsets.2 as i16,
+        offsets.3 as i16,
+        offsets.4 as i16,
+        offsets.5 as i16,
+    );
+
     loop {
-        Timer::after_millis(100).await;
+        Timer::after_secs(1).await;
         let meas = mpu.get_measurements().await;
-        let gyro_angle = angle + (meas.gyro_x * DEG_2_RAD) * 0.1;
-        let accel_angle = libm::atan2f(meas.accel_y, meas.accel_z);
-        const ALPHA: f32 = 0.02;
-        angle = ALPHA * gyro_angle + (1.0 - ALPHA) * accel_angle;
-        info!("{}", angle * RAD_2_DEG);
+        info!("Accel X: {}", meas.accel_x);
+        info!("Accel Y: {}", meas.accel_y);
+        info!("Accel Z: {}", meas.accel_z);
+        info!("Gyro X: {}", meas.gyro_x);
+        info!("Gyro Y: {}", meas.gyro_y);
+        info!("Gyro Z: {}", meas.gyro_z);
         info!("");
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v~1.0/examples
+}
+
+fn low_pass_filter(current: &mut f32, meas: f32) {
+    const ALPHA: f32 = 0.01;
+    *current = (1.0 - ALPHA) * (*current) + ALPHA * meas;
 }
